@@ -5,7 +5,6 @@ use near_o11y::{default_subscriber, BuildEnvFilterError, ColorOutput, EnvFilterB
 use near_primitives::types::{Gas, NumSeats, NumShards};
 use near_state_viewer::StateViewerSubCommand;
 use near_store::db::RocksDB;
-use nearcore::get_store_path;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -80,7 +79,7 @@ impl NeardCmd {
 
             // TODO(mina86): Remove the command in Q3 2022.
             NeardSubCommand::UnsafeResetData => {
-                let store_path = get_store_path(&home_dir);
+                let store_path = near_store::get_store_path(&home_dir);
                 unsafe_reset("unsafe_reset_data", &store_path, "data", "<near-home-dir>/data");
             }
             // TODO(mina86): Remove the command in Q3 2022.

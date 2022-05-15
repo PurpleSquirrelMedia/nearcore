@@ -332,10 +332,6 @@ pub fn read_with_cache<'a, T: BorshDeserialize + 'a>(
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StoreConfig {
-    /// Attempted writes to the DB will fail. Doesn't require a `LOCK` file.
-    #[serde(skip)]
-    pub read_only: bool,
-
     /// Collect internal storage layer statistics.
     /// Minor performance impact is expected.
     #[serde(default)]
@@ -371,19 +367,19 @@ pub struct StoreConfig {
     pub block_size: usize,
 }
 
-fn default_enable_statistics_export() -> bool {
+const fn default_enable_statistics_export() -> bool {
     true
 }
 
-fn default_max_open_files() -> u32 {
+const fn default_max_open_files() -> u32 {
     StoreConfig::DEFAULT_MAX_OPEN_FILES
 }
 
-fn default_col_state_cache_size() -> usize {
+const fn default_col_state_cache_size() -> usize {
     StoreConfig::DEFAULT_COL_STATE_CACHE_SIZE
 }
 
-fn default_block_size() -> usize {
+const fn default_block_size() -> usize {
     StoreConfig::DEFAULT_BLOCK_SIZE
 }
 
@@ -407,34 +403,88 @@ impl StoreConfig {
     /// then.
     pub const DEFAULT_BLOCK_SIZE: usize = 16 * bytesize::KIB as usize;
 
-    pub fn read_only() -> StoreConfig {
-        StoreConfig::read_write().with_read_only(true)
-    }
-
-    pub fn read_write() -> StoreConfig {
-        StoreConfig {
-            read_only: false,
+    const fn const_default() -> Self {
+        Self {
             enable_statistics: false,
-            enable_statistics_export: true,
+            enable_statistics_export: default_enable_statistics_export(),
             max_open_files: default_max_open_files(),
             col_state_cache_size: default_col_state_cache_size(),
             block_size: default_block_size(),
         }
     }
+}
 
-    pub fn with_read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
-        self
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self::const_default()
     }
 }
 
-pub fn create_store(path: &Path) -> Store {
-    create_store_with_config(path, &StoreConfig::read_write())
+// TODO(mina86): This is pub only because recompress-storage needs this value.
+// Refactor code so that this can be private.
+pub const STORE_PATH: &str = "data";
+
+pub fn store_path_exists<P: AsRef<Path>>(path: P) -> bool {
+    std::fs::canonicalize(path).is_ok()
 }
 
-pub fn create_store_with_config(path: &Path, store_config: &StoreConfig) -> Store {
-    let db = RocksDB::open(path, &store_config).expect("Failed to open the database");
-    Store::new(Arc::new(db))
+pub fn get_store_path(base_path: &Path) -> std::path::PathBuf {
+    base_path.join(STORE_PATH)
+}
+
+/// Builder for opening a RocksDB database.
+///
+///
+pub struct StoreBuilder<'a> {
+    path: &'a Path,
+    home_dir: Option<&'a Path>,
+    config: &'a StoreConfig,
+    read_only: bool,
+}
+
+impl<'a> StoreBuilder<'a> {
+    pub fn new(config: &'a StoreConfig) -> Self {
+        Self { path: Path::new(STORE_PATH), home_dir: None, config: config, read_only: false }
+    }
+
+    pub fn with_default_config() -> Self {
+        static CONFIG: StoreConfig = StoreConfig::const_default();
+        Self::new(&CONFIG)
+    }
+
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    pub fn path(mut self, path: &'a Path) -> Self {
+        self.path = path;
+        self
+    }
+
+    pub fn home(mut self, home: &'a Path) -> Self {
+        self.home_dir = Some(home);
+        self
+    }
+
+    pub fn open(self) -> Store {
+        let path = if let Some(ref home) = self.home_dir {
+            std::borrow::Cow::Owned(home.join(self.path))
+        } else {
+            std::borrow::Cow::Borrowed(self.path)
+        };
+        if std::fs::canonicalize(&path).is_ok() {
+            tracing::info!(target: "near", path=%path.display(), "Opening RocksDB database");
+        } else if self.read_only {
+            tracing::error!(target: "near", path=%path.display(), "Database does not exist");
+            panic!("Failed to open non-existent the database");
+        } else {
+            tracing::info!(target: "near", path=%path.display(), "Creating new RocksDB database");
+        }
+        let db = RocksDB::open(&path, &self.config, self.read_only)
+            .expect("Failed to open the database");
+        Store::new(Arc::new(db))
+    }
 }
 
 /// Reads an object from Trie.
